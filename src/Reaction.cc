@@ -1,5 +1,8 @@
 #include "Reaction.hh"
 
+// Uncomment this below to switch to the Butler algorithm (currently in testing)
+#define butler_algorithm
+
 ClassImp( ISSParticle )
 ClassImp( ISSReaction )
 
@@ -62,9 +65,9 @@ double butler_function( double *x, double *params ){
 
 	// From Sam Bennett's first derivation, modified by A. Ceulemans
 	double alpha = TMath::ACos( qb * z / p );
-	double r_max = TMath::Abs( 2.0 * p * TMath::Sin( alpha ) / (qb * 2.0 * TMath::Pi()) );
+	double r_max = TMath::Abs( 2.0 * p * TMath::Sin( alpha ) / (qb * TMath::TwoPi()) );
 	double psi = 2 * TMath::ASin( r_meas / r_max );
-	double root = z_meas - z * ( 1.0 - psi / (2.0 * TMath::Pi()) );
+	double root = z_meas - z * ( 1.0 - psi / (TMath::TwoPi()) );
 
 	return root;
 
@@ -86,9 +89,9 @@ double butler_derivative( double *x, double *params ){
 
 	// From Sam Bennett's first derivation, modified by A. Ceulemans
 	double alpha = TMath::ACos( qb * z / p );
-	double r_max = TMath::Abs( 2.0 * p * TMath::Sin( alpha ) / (qb * 2.0 * TMath::Pi()) );
+	double r_max = TMath::Abs( 2.0 * p * TMath::Sin( alpha ) / (qb * TMath::TwoPi()) );
 	double psi = 2 * TMath::ASin( r_meas / r_max );
-	double root = psi / (2.0 * TMath::Pi()) - 1.0;
+	double root = psi / (TMath::TwoPi()) - 1.0;
 
 	return root;
 
@@ -114,19 +117,21 @@ ISSReaction::ISSReaction( std::string filename, ISSSettings *myset, bool source 
 	SetFile( filename );
 	ReadReaction();
 	
-	// Root finder algorithm - for alpha like Ryan does
-	fa = std::make_unique<TF1>( "alpha_function", alpha_function, 0.0, TMath::Pi()/2.0, 4 );
-	fb = std::make_unique<TF1>( "alpha_derivative", alpha_derivative, 0.0, TMath::Pi()/2.0, 4 );
-	rf = std::make_unique<ROOT::Math::RootFinder>( ROOT::Math::RootFinder::kGSL_NEWTON );
-	
+#ifdef butler_algorithm
 	// Root finder algorithm - The Peter Butler method
-	//double low_limit = z0;
-	//double upp_limit = z0;
-	//if( z0 < 0.0 ) low_limit -= 600.0;
-	//else upp_limit += 600.0;
-	//fa = std::make_unique<TF1>( "butler_function", butler_function, low_limit, upp_limit, 4 );
-	//fb = std::make_unique<TF1>( "butler_derivative", butler_derivative, low_limit, upp_limit, 4 );
-	//rf = std::make_unique<ROOT::Math::RootFinder>( ROOT::Math::RootFinder::kGSL_NEWTON );
+	double low_limit = z0;
+	double upp_limit = z0;
+	if( z0 < 0.0 ) low_limit -= 600.0;
+	else upp_limit += 600.0;
+	fa = std::make_unique<TF1>( "butler_function", butler_function, low_limit, upp_limit, 4 );
+	fb = std::make_unique<TF1>( "butler_derivative", butler_derivative, low_limit, upp_limit, 4 );
+	rf = std::make_unique<ROOT::Math::RootFinder>( ROOT::Math::RootFinder::kGSL_NEWTON );
+#else
+	// Root finder algorithm - for alpha like Ryan does
+	fa = std::make_unique<TF1>( "alpha_function", alpha_function, 0.0, TMath::PiOver2(), 4 );
+	fb = std::make_unique<TF1>( "alpha_derivative", alpha_derivative, 0.0, TMath::PiOver2(), 4 );
+	rf = std::make_unique<ROOT::Math::RootFinder>( ROOT::Math::RootFinder::kGSL_NEWTON );
+#endif
 	
 }
 
@@ -908,23 +913,23 @@ void ISSReaction::MakeReaction( TVector3 vec, double en ){
 	
 	// Apply the energy loss correction and solve again
 	// Keep going for 50 iterations or until we are better than 0.01% change
-	//z = z_meas;
-	//double z_prev = 0.0;
 	alpha = TMath::PiOver4();
-	double alpha_prev = 9999.;
 	unsigned int iter = 0;
 
 	gErrorIgnoreLevel = kBreak; // suppress warnings and errors, but not breaks
-	//while( TMath::Abs( ( z - z_prev ) / z ) > 0.00001 && iter < 50 ) {
-	while( TMath::Abs( ( alpha - alpha_prev ) / alpha ) > 0.0001 && iter < 50 ) {
+
+#ifdef butler_algorithm
+	z = z_meas;
+	double z_prev = 0.0;
+    while( TMath::Abs( ( z - z_prev ) / z ) > 0.00001 && iter < 50 ) {
 
 		// Calculate the lab angle from z position (Butler method)
-		//alpha  = (float)Ejectile.GetZ() * GetField_corr(); 	// qb
-		//alpha /= TMath::TwoPi(); 							// qb/2pi
-		//alpha *= z / Ejectile.GetMomentumLab();				// * z/p
-		//alpha  = TMath::ASin( alpha );
-				
-		// Distance is negative because energy needs to be recovered
+		alpha  = (float)Ejectile.GetZ() * GetField_corr(); 	// qb
+	    alpha /= TMath::TwoPi(); 							// qb/2pi
+		alpha *= z / Ejectile.GetMomentumLab();				// * z/p
+		alpha  = TMath::ASin( alpha );
+		
+        // Distance is negative because energy needs to be recovered
 		// First we recover the energy lost in the Si dead layer
 		double dist = -1.0 * deadlayer / TMath::Abs( TMath::Cos( alpha ) );
 		double eloss = GetEnergyLoss( en, dist, gStopping[2] );
@@ -934,23 +939,53 @@ void ISSReaction::MakeReaction( TVector3 vec, double en ){
 		dist = -0.5 * target_thickness / TMath::Abs( TMath::Sin( alpha ) );
 		eloss = GetEnergyLoss( Ejectile.GetEnergyLab(), dist, gStopping[1] );
 		Ejectile.SetEnergyLab( Ejectile.GetEnergyLab() - eloss );
+
+        // Set parameters
+		z_prev = z;
+		params[2] = Ejectile.GetMomentumLab(); // p
+		fa->SetParameters( params );
+		fb->SetParameters( params );
+
+		// Or use Butler's method
+		ROOT::Math::GradFunctor1D wf( *fa, *fb ); // Butler method
+		rf->SetFunction( wf, z_meas );
+		rf->Solve( 500, 1e-5, 1e-6 );
+
+		// Check result
+		if( rf->Status() ){
+			z = TMath::QuietNaN();
+
+			break;
+		}
+		else z = rf->Root();
 		
-		// Set parameters
-		//z_prev = z;
+
+#else 
+	while( TMath::Abs( ( alpha - alpha_prev ) / alpha ) > 0.0001 && iter < 50 ) {
+        
+		double alpha_prev = 9999.;
+        // Distance is negative because energy needs to be recovered
+		// First we recover the energy lost in the Si dead layer
+		double dist = -1.0 * deadlayer / TMath::Abs( TMath::Cos( alpha ) );
+		double eloss = GetEnergyLoss( en, dist, gStopping[2] );
+		Ejectile.SetEnergyLab( en - eloss );
+		
+		// Then we recover the energy lost in the target
+		dist = -0.5 * target_thickness / TMath::Abs( TMath::Sin( alpha ) );
+		eloss = GetEnergyLoss( Ejectile.GetEnergyLab(), dist, gStopping[1] );
+		Ejectile.SetEnergyLab( Ejectile.GetEnergyLab() - eloss );
+
+        // Set parameters
 		alpha_prev = alpha;
 		params[2] = Ejectile.GetMomentumLab(); // p
 		fa->SetParameters( params );
 		fb->SetParameters( params );
 
+
 		// Build the alpha function and derivative, then solve
 		ROOT::Math::GradFunctor1D wf( *fa, *fb ); // alpha method
 		rf->SetFunction( wf, 0.2 * TMath::Pi() ); // with derivatives
 		rf->Solve( 500, 1e-5, 1e-6 );
-
-		// Or use Butler's method
-		//ROOT::Math::GradFunctor1D wf( *fa, *fb ); // Butler method
-		//rf->SetFunction( wf, z_meas );
-		//rf->Solve( 500, 1e-5, 1e-6 );
 
 		// Check result
 		if( rf->Status() ){
@@ -960,6 +995,8 @@ void ISSReaction::MakeReaction( TVector3 vec, double en ){
 		}
 		//else z = rf->Root();
 		else alpha = rf->Root();
+
+#endif
 		
 		iter++;
 			
@@ -967,18 +1004,20 @@ void ISSReaction::MakeReaction( TVector3 vec, double en ){
 	
 	gErrorIgnoreLevel = kInfo; // print info and above again
 
+#ifdef butler_algorithm
+	// Calculate the lab angle from z position (Butler method)
+	alpha  = (float)Ejectile.GetZ() * GetField_corr(); 	// qb
+	alpha /= TMath::TwoPi(); 							// qb/2pi
+	alpha *= z / Ejectile.GetMomentumLab();				// * z/p
+	alpha  = TMath::ASin( alpha );
+	theta_lab  = alpha + TMath::PiOver2();
+	Ejectile.SetThetaLab( theta_lab );
+#else
 	// Get the real z value at beam axis and lab angle (alpha method)
 	if( z_meas < 0 ) z = z_meas - r_meas * TMath::Tan( alpha );
 	else z = z_meas + r_meas * TMath::Tan( alpha );
 	Ejectile.SetThetaLab( TMath::PiOver2() + alpha );
-
-	// Calculate the lab angle from z position (Butler method)
-	//alpha  = (float)Ejectile.GetZ() * GetField_corr(); 	// qb
-	//alpha /= TMath::TwoPi(); 							// qb/2pi
-	//alpha *= z / Ejectile.GetMomentumLab();				// * z/p
-	//alpha  = TMath::ASin( alpha );
-	//theta_lab  = alpha + TMath::PiOver2();
-	//Ejectile.SetThetaLab( theta_lab );
+#endif
 
 	// Total energy of ejectile in centre of mass
 	e3_cm = Ejectile.GetEnergyTotLab();
